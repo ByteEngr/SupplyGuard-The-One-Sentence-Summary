@@ -1,0 +1,3 @@
+Install-Module Microsoft.Graph -Scope CurrentUser
+Install-Module Microsoft.Online.SharePoint.PowerShell -Scope CurrentUser
+Install-Module ExchangeOnlineManagement -Scope CurrentUser
