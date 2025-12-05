@@ -1,139 +1,136 @@
-Add-Supplier.ps1
-<#
-.SYNOPSIS
-    One-click supplier onboarding for a single Microsoft 365 tenant.
+import os
+import uuid
+import datetime
+import requests
+import msal
 
-.DESCRIPTION
-    - Creates an M365 group (Unified)
-    - Creates a Team (and associated SharePoint site)
-    - Invites supplier users as B2B guests
-    - Adds them to the group
-    - Sets expiry metadata (in description) and optionally hooks into a lifecycle policy
+# ==== CONFIG ====
+TENANT_ID = os.getenv("TENANT_ID")          # your tenant
+CLIENT_ID = os.getenv("CLIENT_ID")          # app registration
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")  # client secret
 
-.NOTES
-    Requires:
-    - Microsoft.Graph PowerShell SDK
-    - App with sufficient permissions or admin delegated sign-in
-#>
+GRAPH_SCOPE = ["https://graph.microsoft.com/.default"]
+GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0"
 
-param(
-    [Parameter(Mandatory = $true)]
-    [string]$SupplierName,
+SUPPLIER_NAME = "Contoso Logistics"
+SUPPLIER_DOMAIN = "contoso-logistics.example"
+SUPPLIER_USERS = ["alice@contoso-logistics.example", "bob@contoso-logistics.example"]
+EXPIRY_DAYS = 90
 
-    [Parameter(Mandatory = $true)]
-    [string]$SupplierDomain,
+# ==== AUTH ====
+def get_access_token():
+    app = msal.ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{TENANT_ID}",
+        client_credential=CLIENT_SECRET
+    )
+    result = app.acquire_token_for_client(scopes=GRAPH_SCOPE)
+    if "access_token" not in result:
+        raise Exception(f"Could not obtain access token: {result}")
+    return result["access_token"]
 
-    [Parameter(Mandatory = $true)]
-    [string[]]$SupplierUsers,   # list of email addresses
+def graph_post(url, token, json_body):
+    resp = requests.post(
+        f"{GRAPH_ENDPOINT}{url}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=json_body
+    )
+    if not resp.ok:
+        raise Exception(f"Graph POST {url} failed: {resp.status_code} {resp.text}")
+    return resp.json()
 
-    [int]$ExpiryDays = 90
-)
+def graph_get(url, token, params=None):
+    resp = requests.get(
+        f"{GRAPH_ENDPOINT}{url}",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params
+    )
+    if not resp.ok:
+        raise Exception(f"Graph GET {url} failed: {resp.status_code} {resp.text}")
+    return resp.json()
 
-# 1. Connect to Microsoft Graph
-# For delegated (interactive) – good for testing:
-# Connect-MgGraph -Scopes "User.Read.All","Group.ReadWrite.All","Directory.ReadWrite.All"
+# ==== MAIN WORKFLOW ====
+def main():
+    token = get_access_token()
 
-# For app-only (recommended for automation), use:
-# Connect-MgGraph -ClientId "YOUR_APP_ID" -TenantId "YOUR_TENANT_ID" -CertificateThumbprint "THUMBPRINT"
+    # 1) Create Unified Group
+    mail_nickname = "".join(c.lower() for c in SUPPLIER_NAME if c.isalnum())
+    if len(mail_nickname) > 40:
+        mail_nickname = mail_nickname[:40]
 
-Import-Module Microsoft.Graph
+    expiry_date = (datetime.datetime.utcnow() + datetime.timedelta(days=EXPIRY_DAYS)).date().isoformat()
 
-Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-Connect-MgGraph -Scopes "User.Read.All","Group.ReadWrite.All","Directory.ReadWrite.All"
-Select-MgProfile -Name "v1.0"
-
-# Helper: sanitize supplier name for mail nickname
-function New-MailNicknameFromName {
-    param([string]$name)
-    $nickname = $name.ToLowerInvariant() -replace '[^a-z0-9]', ''
-    if ($nickname.Length -gt 40) {
-        $nickname = $nickname.Substring(0, 40)
+    group_body = {
+        "displayName": f"SUPPLIER - {SUPPLIER_NAME}",
+        "mailNickname": mail_nickname,
+        "mailEnabled": True,
+        "securityEnabled": False,
+        "groupTypes": ["Unified"],
+        "description": f"Supplier: {SUPPLIER_NAME} ({SUPPLIER_DOMAIN}) | Expires on {expiry_date}"
     }
-    return $nickname
-}
 
-$nickname = New-MailNicknameFromName -name $SupplierName
-$expiryDate = (Get-Date).AddDays($ExpiryDays).ToString("yyyy-MM-dd")
+    group = graph_post("/groups", token, group_body)
+    group_id = group["id"]
+    print(f"Created group: {group['displayName']} ({group_id})")
 
-Write-Host "Creating M365 group for supplier '$SupplierName'..." -ForegroundColor Cyan
-
-# 2. Create Unified Group (M365 group)
-$groupBody = @{
-    displayName     = "SUPPLIER - $SupplierName"
-    mailNickname    = $nickname
-    mailEnabled     = $true
-    securityEnabled = $false
-    groupTypes      = @("Unified")
-    description     = "Supplier: $SupplierName ($SupplierDomain) | Expires on $expiryDate"
-}
-
-$group = New-MgGroup -BodyParameter $groupBody
-Write-Host "Created group: $($group.DisplayName) ($($group.Id))"
-
-# 3. Create a Team on top of the group (auto-creates SharePoint site)
-# This call is asynchronous; in production you may want to poll until complete.
-Write-Host "Creating Team for the supplier group..." -ForegroundColor Cyan
-
-$teamBody = @{
-    "memberSettings" = @{
-        "allowCreateUpdateChannels" = $true
+    # 2) Create Team on top of group (standard template)
+    team_body = {
+        "memberSettings": {"allowCreateUpdateChannels": True},
+        "messagingSettings": {
+            "allowUserEditMessages": True,
+            "allowUserDeleteMessages": True
+        },
+        "funSettings": {"allowGiphy": True},
+        "template@odata.bind": "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"
     }
-    "messagingSettings" = @{
-        "allowUserEditMessages" = $true
-        "allowUserDeleteMessages" = $true
-    }
-    "funSettings" = @{
-        "allowGiphy" = $true
-    }
-    "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"
-}
 
-New-MgTeam -GroupId $group.Id -BodyParameter $teamBody
+    # PUT /teams/{group-id}
+    resp = requests.put(
+        f"{GRAPH_ENDPOINT}/teams/{group_id}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=team_body
+    )
+    if resp.status_code not in (200, 202):
+        raise Exception(f"Failed to create team: {resp.status_code} {resp.text}")
 
-# Retrieve primary site URL (optional, for invite redirect)
-Write-Host "Fetching associated SharePoint site (may take a few seconds to provision)..." -ForegroundColor Yellow
-Start-Sleep -Seconds 10
+    print("Team creation initiated (may take some time).")
 
-$sites = Get-MgGroupSite -GroupId $group.Id -ErrorAction SilentlyContinue
-$siteUrl = $null
-if ($sites) {
-    $siteUrl = $sites[0].WebUrl
-    Write-Host "Supplier SharePoint/Teams site URL: $siteUrl"
-} else {
-    Write-Host "Could not retrieve site yet. It may still be provisioning." -ForegroundColor Yellow
-}
+    # 3) Get associated site (optional)
+    # It may not be immediately available – in real code you'd poll/retry.
+    try:
+        sites = graph_get(f"/groups/{group_id}/sites", token)
+        site_url = sites["value"][0]["webUrl"] if sites.get("value") else None
+    except Exception:
+        site_url = None
 
-# 4. Invite each supplier user as a guest and add to group
-foreach ($email in $SupplierUsers) {
-    Write-Host "Inviting supplier user: $email" -ForegroundColor Cyan
+    print(f"Site URL: {site_url}")
 
-    $inviteBody = @{
-        invitedUserEmailAddress = $email
-        inviteRedirectUrl       = $siteUrl # will send them here after redemption
-        sendInvitationMessage   = $true
-        invitedUserMessageInfo  = @{
-            customizedMessageBody = "You've been granted secure access as a supplier to $SupplierName."
+    # 4) Invite supplier users as guests and add to group
+    for email in SUPPLIER_USERS:
+        invite_body = {
+            "invitedUserEmailAddress": email,
+            "inviteRedirectUrl": site_url or "https://teams.microsoft.com",
+            "sendInvitationMessage": True,
+            "invitedUserMessageInfo": {
+                "customizedMessageBody": f"You've been granted secure supplier access for {SUPPLIER_NAME}."
+            }
         }
-    }
+        invitation = graph_post("/invitations", token, invite_body)
+        guest_user = invitation.get("invitedUser", {})
+        guest_id = guest_user.get("id")
 
-    $invitation = New-MgInvitation -BodyParameter $inviteBody
+        if not guest_id:
+            print(f"Warning: no guestId returned for {email}, skipping group membership.")
+            continue
 
-    $guestUserId = $invitation.invitedUser.Id
-    if (-not $guestUserId) {
-        Write-Warning "Could not retrieve guest user ID for $email. Skipping group membership."
-        continue
-    }
+        # Add to group members
+        ref_body = {
+            "@odata.id": f"https://graph.microsoft.com/v1.0/directoryObjects/{guest_id}"
+        }
+        graph_post(f"/groups/{group_id}/members/$ref", token, ref_body)
+        print(f"Invited and added {email} to group.")
 
-    # Add guest to group
-    $directoryObjectBody = @{
-        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$guestUserId"
-    }
+    print("Supplier onboarding complete.")
 
-    New-MgGroupMemberByRef -GroupId $group.Id -BodyParameter $directoryObjectBody
-    Write-Host "Added $email as member of group $($group.DisplayName)."
-}
-
-Write-Host "Supplier onboarding complete!" -ForegroundColor Green
-Write-Host "Group: $($group.DisplayName)"
-Write-Host "Site:  $siteUrl"
-Write-Host "Expires (metadata): $expiryDate"
+if __name__ == "__main__":
+    main()
