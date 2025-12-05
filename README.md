@@ -1,5 +1,5 @@
-# SupplyGuard-The-One-Sentence-Summary
-# SupplyGuard Open
+# SupplyGuard-Tools
+# SupplyGuard - supply-chain-collab-security
 
 SupplyGuard is the first Microsoft 365 security layer designed to protect organisations
 against a rapidly-emerging blind spot: **external Microsoft 365 tenants** used during
