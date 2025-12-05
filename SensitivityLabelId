@@ -1,0 +1,30 @@
+function Get-SupplyGuardSensitivityLabel {
+    <#
+    .SYNOPSIS
+        Lists container sensitivity labels with their IDs.
+
+    .DESCRIPTION
+        Helps admins find the correct label GUID to pass to New-SupplyGuardSupplier.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+        Write-Warning "ExchangeOnlineManagement module not found. Install-Module ExchangeOnlineManagement"
+        return
+    }
+
+    Import-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue
+
+    try {
+        Connect-IPPSSession -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Failed to connect to Purview/SCC. Ensure you have permissions."
+        return
+    }
+
+    # Note: Get-Label is the modern cmdlet for sensitivity labels
+    $labels = Get-Label
+    $labels | Select-Object DisplayName, Name, Guid
+}
