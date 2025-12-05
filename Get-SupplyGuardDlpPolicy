@@ -1,0 +1,28 @@
+function Get-SupplyGuardDlpPolicy {
+    <#
+    .SYNOPSIS
+        Lists DLP policies with their names and locations.
+
+    .DESCRIPTION
+        Helps admins choose the DLP policy name to pass to New-SupplyGuardSupplier.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+        Write-Warning "ExchangeOnlineManagement module not found. Install-Module ExchangeOnlineManagement"
+        return
+    }
+
+    Import-Module ExchangeOnlineManagement -ErrorAction SilentlyContinue
+
+    try {
+        Connect-IPPSSession -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Failed to connect to Purview/SCC. Ensure you have permissions."
+        return
+    }
+
+    Get-DlpCompliancePolicy | Select-Object Name, Mode, SharePointLocation
+}
