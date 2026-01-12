@@ -33,7 +33,7 @@ This repository contains the open-source components, community documentation, ex
 
 ---
 
-## 🧪 Try the MVP Scripts
+## Try the MVP Scripts
 
 > Requires: Microsoft Graph PowerShell SDK + Security / Global Admin role.
 
